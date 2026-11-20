@@ -1,0 +1,295 @@
+{
+  "name": "Silent lead follow-up · 5-touch cadence",
+  "nodes": [
+    {
+      "id": "11d58d5f-42a0-4c81-9dcb-6b66cc9bdb78",
+      "name": "Weekdays 9:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        112
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "60838f31-2a34-4c37-b3b0-07f3028d448f",
+      "name": "Zoho: leads in cadence",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        224,
+        112
+      ],
+      "parameters": {
+        "url": "https://www.zohoapis.com/crm/v2/Leads/search",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "zohoOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "criteria",
+              "value": "((Lead_Status:equals:Контакт 1 · email)or(Lead_Status:equals:Контакт 2 · Telegram)or(Lead_Status:equals:Контакт 3 · email)or(Lead_Status:equals:Контакт 4 · WhatsApp)or(Lead_Status:equals:Контакт 5 · фінал))"
+            },
+            {
+              "name": "per_page",
+              "value": "200"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "8b776117-ad9d-4938-8309-222c1475cc3f",
+      "name": "Pick leads due for a touch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        112
+      ],
+      "parameters": {
+        "jsCode": "// 5-touch cadence. The lead's status = the touch that is due now.\n// minDays = business days that must pass since the last activity.\n// Status values must match your Zoho \"Lead Status\" picklist exactly.\nconst STAGES = {\n  'Контакт 1 · email':    { step: 1, channel: 'Email',    next: 'Контакт 2 · Telegram', minDays: 0 },\n  'Контакт 2 · Telegram': { step: 2, channel: 'Telegram', next: 'Контакт 3 · email',    minDays: 2 },\n  'Контакт 3 · email':    { step: 3, channel: 'Email',    next: 'Контакт 4 · WhatsApp', minDays: 3 },\n  'Контакт 4 · WhatsApp': { step: 4, channel: 'WhatsApp', next: 'Контакт 5 · фінал',    minDays: 3 },\n  'Контакт 5 · фінал':    { step: 5, channel: 'Email',    next: 'Пауза',                minDays: 3 },\n};\n// Zoho CRM web UI domain: crm.zoho.com, crm.zoho.eu, ...\nconst ZOHO_UI = 'https://crm.zoho.com';\n\nfunction businessDaysSince(iso) {\n  if (!iso) return 999;\n  const start = new Date(iso);\n  if (isNaN(start)) return 999;\n  let days = 0;\n  const d = new Date(start); d.setHours(0, 0, 0, 0);\n  const end = new Date(); end.setHours(0, 0, 0, 0);\n  while (d < end) {\n    d.setDate(d.getDate() + 1);\n    const wd = d.getDay();\n    if (wd !== 0 && wd !== 6) days++;\n  }\n  return days;\n}\n\nconst leads = $input.first()?.json?.data || [];\nconst out = [];\nfor (const l of leads) {\n  const status = String(l.Lead_Status || '').trim();\n  const st = STAGES[status];\n  if (!st) continue;\n  const last = l.Last_Activity_Time || l.Modified_Time || l.Created_Time;\n  const waited = businessDaysSince(last);\n  if (waited < st.minDays) continue;\n  // score_AI and bant_qulif are custom fields filled by the lead-qualification workflow; empty score = Warm\n  const score = (l.score_AI === null || l.score_AI === undefined || l.score_AI === '') ? NaN : Number(l.score_AI);\n  const temp = Number.isFinite(score) ? (score >= 71 ? 'Hot' : score >= 31 ? 'Warm' : 'Cold') : 'Warm';\n  out.push({ json: {\n    lead_id: l.id,\n    name: l.Full_Name || [l.First_Name, l.Last_Name].filter(Boolean).join(' '),\n    first_name: l.First_Name || '',\n    company: l.Company || '',\n    description: l.Description || '',\n    bant: l.bant_qulif ?? '',\n    score: Number.isFinite(score) ? score : null,\n    temperature: temp,\n    status,\n    step: st.step,\n    channel: st.channel,\n    next_status: st.next,\n    business_days_waited: waited === 999 ? null : waited,\n    crm_link: ZOHO_UI + '/crm/tab/Leads/' + l.id,\n  } });\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "fa45f2bf-cffd-4f33-b16f-6e037a0d6f6b",
+      "name": "AI: draft touch",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        672,
+        112
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Напиши follow-up повідомлення ліду, який ще не відповів.\n\nДАНІ ЛІДА\nІмʼя: {{ $json.name }}\nКомпанія: {{ $json.company }}\nОпис запиту: {{ $json.description }}\nКваліфікація (BANT): {{ $json.bant }}\nТемпература: {{ $json.temperature }}{{ $json.score !== null ? ' (score ' + $json.score + ')' : '' }}\nЕтап: {{ $json.step }} з 5\nКанал: {{ $json.channel }}",
+        "messages": {
+          "messageValues": [
+            {
+              "type": "SystemMessagePromptTemplate",
+              "message": "Ти — уважний B2B-менеджер з продажу. Пишеш коротке повідомлення клієнту, яке менеджер перевірить і надішле сам.\n\nЖОРСТКІ ПРАВИЛА\n- Використовуй лише дані ліда з повідомлення користувача.\n- Не вигадуй фактів, цифр, досліджень, відсотків, кейсів, імен клієнтів, знижок, цін і дедлайнів.\n- Без тиску, маніпуляцій і фальшивої терміновості.\n- Мова — українська, звертання на «ви».\n- Виведи ЛИШЕ текст повідомлення, без пояснень. Для Email перший рядок: «Тема: …».\n\nСТРАТЕГІЯ ЗА ЕТАПОМ\n1 — перший дотик: коротко нагадай про запит клієнта і запропонуй наступний крок.\n2 — інший кут: одне конкретне запитання про його процес, без нагадування «я вже писав».\n3 — нова подача: поясни одну практичну користь у звʼязку з його запитом.\n4 — мʼякий вибір: коротка розмова або пауза — рішення за клієнтом.\n5 — завершення: коротко й по-людськи закрий діалог, залиш двері відчиненими, більше не пиши.\n\nТЕМПЕРАТУРА\nCold — без прохання про дзвінок, мʼяке запитання. Warm — запропонуй 15 хвилин розмови. Hot — конкретний наступний крок (дзвінок або пропозиція).\n\nДОВЖИНА\nTelegram і WhatsApp — 2–4 речення без теми. Email — до 6 речень. Етап 5 — 2–3 речення."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "5ee232e8-cf1d-46b8-b655-eff3e56b5ab0",
+      "name": "Claude Sonnet",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.5,
+      "position": [
+        752,
+        336
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-4-6",
+          "cachedResultName": "Claude Sonnet 4.6"
+        },
+        "options": {
+          "maxTokensToSample": 800,
+          "temperature": 0.5
+        }
+      }
+    },
+    {
+      "id": "e6f5b25a-51ad-4f0b-9539-c50d9f2e3824",
+      "name": "Zoho: update lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1024,
+        112
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "https://www.zohoapis.com/crm/v2/Leads",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "zohoOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ data: [{ id: $('Pick leads due for a touch').item.json.lead_id, Lead_Status: $('Pick leads due for a touch').item.json.next_status, AI_next_action: ('Надіслати ' + $('Pick leads due for a touch').item.json.channel + ' (етап ' + $('Pick leads due for a touch').item.json.step + '/5), чернетка в Telegram і в Нотатках').slice(0, 255) }] }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "06fd2097-77a3-41db-84af-ff8db21cc826",
+      "name": "Zoho: add note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1248,
+        112
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://www.zohoapis.com/crm/v2/Leads/' + $('Pick leads due for a touch').item.json.lead_id + '/Notes' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "zohoOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ data: [{ Note_Title: 'Follow-up · етап ' + $('Pick leads due for a touch').item.json.step + '/5 · ' + $('Pick leads due for a touch').item.json.channel, Note_Content: String($('AI: draft touch').item.json.text || '') }] }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "bc27d128-1609-4d0d-becf-50d1ccb59dd4",
+      "name": "Telegram: draft to manager",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1472,
+        112
+      ],
+      "webhookId": "61d7dfa6-1c53-4088-8ede-b8912ce0a700",
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ (() => { const l = $('Pick leads due for a touch').item.json; const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); const msg = String($('AI: draft touch').item.json.text || '').slice(0, 3000); return '📨 <b>Follow-up · етап ' + l.step + '/5 · ' + esc(l.channel) + '</b>\\n' + '👤 ' + esc(l.name) + (l.company ? ' · ' + esc(l.company) : '') + '\\n' + '🌡 ' + l.temperature + (l.business_days_waited !== null ? ' · мовчить ' + l.business_days_waited + ' роб. дн.' : '') + '\\n\\n' + '<b>Чернетка (перевірте й надішліть самі):</b>\\n' + esc(msg) + '\\n\\n' + '➡️ Статус у CRM: ' + esc(l.next_status) + '\\n' + '<a href=\"' + l.crm_link + '\">Відкрити ліда в Zoho</a>\\n' + 'Якщо клієнт відповів — змініть статус ліда, і ланцюжок зупиниться.'; })() }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Setup\n1. Zoho Lead Status picklist: add the 5 stage values + `Пауза` (or rename them in **Pick leads due for a touch** and in the search criteria).\n2. Connect Zoho OAuth2, Anthropic and Telegram credentials.\n3. Set your chat ID in **Telegram: draft to manager**; change the Zoho domain if you are not on .com.\n4. Run once with a test lead, then activate.\n\nDrafts only — the manager always sends the message.",
+        "height": 300,
+        "width": 560,
+        "color": 5
+      },
+      "id": "0da2f9d5-9bf5-4321-910f-eec3027d3007",
+      "name": "Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        -300
+      ]
+    }
+  ],
+  "connections": {
+    "Weekdays 9:00": {
+      "main": [
+        [
+          {
+            "node": "Zoho: leads in cadence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zoho: leads in cadence": {
+      "main": [
+        [
+          {
+            "node": "Pick leads due for a touch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick leads due for a touch": {
+      "main": [
+        [
+          {
+            "node": "AI: draft touch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: draft touch": {
+      "main": [
+        [
+          {
+            "node": "Zoho: update lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Sonnet": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI: draft touch",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zoho: update lead": {
+      "main": [
+        [
+          {
+            "node": "Zoho: add note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zoho: add note": {
+      "main": [
+        [
+          {
+            "node": "Telegram: draft to manager",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [],
+  "description": "Every weekday picks Zoho leads in a 5-touch cadence, drafts the next touch with AI, moves the status, saves the draft as a lead note and sends it to the manager in Telegram."
+}
