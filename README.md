@@ -36,6 +36,12 @@ Leads who go silent after the first contact are rarely lost because of price. Mo
 
 When the client replies, the manager changes the status and the cadence stops for that lead.
 
+## Workflow in n8n
+
+Every step carries a note on the canvas, so the logic is readable right after import.
+
+![Silent lead follow-up workflow in n8n](docs/screenshots/01-workflow.png)
+
 ## Stack
 
 n8n (self-hosted) · Zoho CRM API v2 · Anthropic Claude · Telegram Bot API
