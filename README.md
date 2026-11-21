@@ -44,26 +44,28 @@ n8n (self-hosted) · Zoho CRM API v2 · Anthropic Claude · Telegram Bot API
 
 1. Import `workflows/silent-lead-follow-up.json` into n8n.
 2. In Zoho CRM, add these values to the *Lead Status* picklist:
-   - `Контакт 1 · email`
-   - `Контакт 2 · Telegram`
-   - `Контакт 3 · email`
-   - `Контакт 4 · WhatsApp`
-   - `Контакт 5 · фінал`
-   - `Пауза`
+   - `Touch 1 · Email`
+   - `Touch 2 · Telegram`
+   - `Touch 3 · Email`
+   - `Touch 4 · WhatsApp`
+   - `Touch 5 · Final`
+   - `Paused`
 
    To use other names, change the same values in `STAGES` (node **Pick leads due for a touch**) and in the search `criteria` (node **Zoho: leads in cadence**).
-3. Optional custom fields on Leads:
+3. Open the **Config** node and set your Telegram chat ID, Zoho domains (`zohoapis.com` / `.eu` / `.in` and the matching `crm.zoho…`) and the maximum number of drafts per run.
+4. Optional custom fields on Leads:
    - `score_AI` (number) and `bant_qulif` (text). If they are empty, the lead is treated as Warm. Both are filled by a separate lead-qualification workflow.
    - `AI_next_action` (text, 255).
-4. Connect credentials: Zoho OAuth2, Anthropic and Telegram.
-5. Replace the placeholders from [`.env.example`](.env.example).
+5. Connect credentials: Zoho OAuth2, Anthropic and Telegram.
 6. Run it once manually with a test lead, then activate it.
 
-The prompts and the Telegram message are in Ukrainian, because the cadence was written for Ukrainian-speaking clients. To use another language, change the system message in **AI: draft touch** and the text in **Telegram: draft to manager**.
+Every node has a sticky note on the canvas explaining what it does and what to change.
 
 ## Notes
 
 - Draft first, human sends: the workflow never messages a client directly.
+- One draft per stage: the status moves forward before the note and the Telegram message are created. If the status update fails, the run stops and nothing is sent.
+- Zoho, AI and Telegram calls retry 3 times; a Zoho auth error stops the run instead of silently returning no leads.
 - Business days are counted Monday to Friday; public holidays are not excluded.
 - Zoho search indexing can lag about a minute after a status change, so a freshly edited lead may be picked up on the next run.
 - No client data is included in this repository.
